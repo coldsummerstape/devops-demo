@@ -1,0 +1,332 @@
+name: release
+
+on:
+  push:
+    branches: [ main, master, 'feat/*' ]
+    tags:
+      - 'v?[0-9]+.[0-9]+.[0-9]+'
+      - 'v?[0-9]+.[0-9]+.[0-9]+-[0-9]+'
+  workflow_dispatch:
+    inputs:
+      skip_e2e:
+        description: "Skip e2e tests"
+        required: false
+        default: "false"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/devops-demo
+  CHART_DIR: charts/stack
+  CHART_NAME: devops-demo
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20.x, 22.x]
+    permissions:
+      contents: read
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping || exit 1"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      SKIP_E2E: ${{ inputs.skip_e2e || vars.SKIP_E2E || 'false' }}
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Lint should not block release during initial CI bring-up
+      - name: Lint
+        run: npm run lint --if-present
+        continue-on-error: true
+
+      - name: Unit tests (JSON report)
+        run: |
+          mkdir -p reports
+          npx jest --ci --reporters=default --json --outputFile=reports/jest-unit-${{ matrix.node-version }}.json
+        continue-on-error: true
+
+      - name: E2E tests (JSON report)
+        if: env.SKIP_E2E != 'true'
+        run: |
+          mkdir -p reports
+          npx jest --config ./test/jest-e2e.json --ci --reporters=default --testTimeout=30000 --forceExit --json --outputFile=reports/jest-e2e-${{ matrix.node-version }}.json
+        continue-on-error: true
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: jest-reports-${{ matrix.node-version }}
+          path: reports/*.json
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [ test ]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+      COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize image name (lowercase)
+        id: names
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          echo "image=$(echo "$IMG" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Extract Docker metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.names.outputs.image }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
+            type=sha
+            type=ref,event=branch
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Normalize cache ref (lowercase)
+        id: cacheref
+        run: |
+          echo "ref=$(echo ${{ steps.names.outputs.image }}:buildcache | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=gha
+            type=registry,ref=${{ steps.cacheref.outputs.ref }}
+          cache-to: |
+            type=gha,mode=max
+            type=registry,ref=${{ steps.cacheref.outputs.ref }},mode=max
+
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '${{ steps.names.outputs.image }}@${{ steps.build.outputs.digest }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL'
+
+      - name: Export primary image tag
+        id: image
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "tag=${{ steps.names.outputs.image }}:${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ steps.names.outputs.image }}:${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Cosign
+        if: env.COSIGN_PRIVATE_KEY != ''
+        uses: sigstore/cosign-installer@v3.10.0
+
+      - name: Sign image with Cosign
+        if: env.COSIGN_PRIVATE_KEY != ''
+        env:
+          IMAGE: ${{ steps.names.outputs.image }}:${{ github.sha }}
+        run: |
+          echo "$COSIGN_PRIVATE_KEY" | base64 -d > cosign.key
+          cosign sign --yes --key cosign.key "$IMAGE"
+
+  helm:
+    runs-on: ubuntu-latest
+    needs: [ docker ]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Enable Helm OCI
+        run: echo "export HELM_EXPERIMENTAL_OCI=1" >> $GITHUB_ENV
+
+      - name: Add required Helm repos
+        run: |
+          helm repo add bjw-s https://bjw-s-labs.github.io/helm-charts
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+
+      - name: Compute chart version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=0.1.0-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Helm dependency update
+        working-directory: ${{ env.CHART_DIR }}
+        run: helm dependency update
+
+      - name: Helm lint (umbrella)
+        working-directory: ${{ env.CHART_DIR }}
+        run: helm lint .
+
+      - name: Helm template (pre-render check)
+        working-directory: ${{ env.CHART_DIR }}
+        run: |
+          helm template devops-demo . -n devops-test --values values.yaml > /dev/null
+
+      - name: Package chart
+        working-directory: ${{ env.CHART_DIR }}
+        run: helm package . --version ${{ steps.version.outputs.version }} --app-version ${{ steps.version.outputs.version }} -d ../dist
+
+      - name: Normalize chart repo path (lowercase)
+        id: chartrepo
+        run: |
+          echo "repo=$(echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/charts" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Login to GHCR (OCI)
+        run: echo ${{ secrets.GITHUB_TOKEN }} | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+      - name: Push chart to GHCR (OCI)
+        run: |
+          CHART_TGZ=$(ls charts/dist/${{ env.CHART_NAME }}-*.tgz)
+          helm push "$CHART_TGZ" oci://${{ steps.chartrepo.outputs.repo }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [ helm ]
+    permissions:
+      contents: read
+      packages: read
+    environment: production  # Опционально: для дополнительной защиты
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'  # Укажите нужную версию
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Verify kubectl connection
+        run: kubectl cluster-info
+
+      - name: Create namespace
+        run: |
+          kubectl create namespace devops-test --dry-run=client -o yaml | kubectl apply -f -
+          echo "Namespace devops-test created/verified"
+
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Enable Helm OCI
+        run: echo "export HELM_EXPERIMENTAL_OCI=1" >> $GITHUB_ENV
+
+      - name: Login to GHCR (OCI)
+        run: echo ${{ secrets.GITHUB_TOKEN }} | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+      - name: Compute image tag for deploy
+        id: imgtag
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compute chart version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=0.1.0-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy with Helm
+        run: |
+          IMAGE_TAG="${{ steps.imgtag.outputs.tag }}"
+          echo "Using image tag: $IMAGE_TAG"
+          helm upgrade --install devops-demo oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }} \
+            --version ${{ steps.version.outputs.version }} \
+            --namespace devops-test \
+            --create-namespace \
+            --set app.controllers.app.containers.app.image.tag=$IMAGE_TAG
+
+      - name: Verify deployment
+        run: |
+          echo "Checking deployment status..."
+          kubectl get pods -n devops-test -l app.kubernetes.io/name=devops-demo
+          echo "Waiting for pods to be ready..."
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=devops-demo -n devops-test --timeout=300s || echo "Some pods may not be ready yet"

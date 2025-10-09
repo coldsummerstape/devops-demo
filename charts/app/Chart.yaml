@@ -1,0 +1,12 @@
+apiVersion: v2
+name: devops-demo-app
+version: 0.1.0
+appVersion: "0.1.0"
+description: Helm chart for NestJS app connecting to Redis
+type: application
+
+dependencies:
+  - name: redis
+    repository: https://charts.bitnami.com/bitnami
+    version: "^19.0.0"
+    condition: redis.enabled
