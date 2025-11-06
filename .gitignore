@@ -55,9 +55,10 @@ pids
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
-# Helm
-charts/app/charts/
-charts/app/Chart.lock
+# Helm charts and archives
+charts/**/charts/
+charts/**/Chart.lock
+*.tgz
 
 # CV files
 data/cv/
