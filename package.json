@@ -17,16 +17,22 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "telegram:session": "ts-node scripts/gen-telegram-session.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/typeorm": "^10.0.2",
+    "pg": "^8.13.1",
     "redis": "^5.8.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "telegraf": "^4.16.3",
+    "telegram": "^2.22.2",
+    "typeorm": "^0.3.20"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -39,6 +45,7 @@
     "@types/express": "^5.0.0",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.10.7",
+    "@types/pg": "^8.11.10",
     "@types/supertest": "^6.0.2",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
@@ -70,6 +77,9 @@
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "moduleNameMapper": {
+      "^src/(.*)$": "<rootDir>/$1"
+    }
   }
 }

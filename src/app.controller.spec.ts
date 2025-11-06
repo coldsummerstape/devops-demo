@@ -3,20 +3,52 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
 describe('AppController', () => {
-	let appController: AppController;
+	let controller: AppController;
+	let service: AppService;
 
 	beforeEach(async () => {
-		const app: TestingModule = await Test.createTestingModule({
+		const module: TestingModule = await Test.createTestingModule({
 			controllers: [AppController],
-			providers: [AppService],
+			providers: [
+				{
+					provide: AppService,
+					useValue: {
+						getHello: jest.fn(),
+						checkRedisHealth: jest.fn(),
+					},
+				},
+			],
 		}).compile();
 
-		appController = app.get<AppController>(AppController);
+		controller = module.get<AppController>(AppController);
+		service = module.get<AppService>(AppService);
 	});
 
-	describe('root', () => {
+	it('should be defined', () => {
+		expect(controller).toBeDefined();
+	});
+
+	describe('getHello', () => {
 		it('should return "Hello World!"', () => {
-			expect(appController.getHello()).toBe('Hello World!');
+			jest.spyOn(service, 'getHello').mockReturnValue('Hello World!');
+
+			const result = controller.getHello();
+
+			expect(result).toBe('Hello World!');
+			expect(service.getHello).toHaveBeenCalled();
+		});
+	});
+
+	describe('getRedisHealth', () => {
+		it('should return Redis health status', async () => {
+			const mockHealth = { status: true, message: 'Redis connection is healthy' };
+			jest.spyOn(service, 'checkRedisHealth').mockResolvedValue(mockHealth);
+
+			const result = await controller.getRedisHealth();
+
+			expect(result).toEqual(mockHealth);
+			expect(service.checkRedisHealth).toHaveBeenCalled();
 		});
 	});
 });
+

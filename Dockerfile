@@ -6,6 +6,7 @@ WORKDIR /app
 
 # Install dependencies separately for better layer caching
 COPY package*.json ./
+COPY .npmrc* ./
 RUN npm ci --ignore-scripts --no-audit
 
 # 2) Build stage

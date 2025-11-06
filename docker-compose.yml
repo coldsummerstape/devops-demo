@@ -1,0 +1,116 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: devops-demo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: devops_demo
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - devops-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: devops-demo-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - devops-network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: devops-demo-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: devops_demo
+      DB_SYNC: "true"
+      DB_LOGGING: "false"
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Telegram (from .env or override)
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_SESSION: ${TELEGRAM_SESSION}
+      TELEGRAM_CHANNEL_IDS: ${TELEGRAM_CHANNEL_IDS:-}
+      TELEGRAM_JOB_KEYWORDS: ${TELEGRAM_JOB_KEYWORDS:-#вакансия,#vacancy}
+      TELEGRAM_REPLY_TEMPLATE: ${TELEGRAM_REPLY_TEMPLATE:-}
+      TELEGRAM_DRY_RUN: ${TELEGRAM_DRY_RUN:-true}
+      TELEGRAM_DM_MAX: ${TELEGRAM_DM_MAX:-3}
+      TELEGRAM_DM_DELAY_MS: ${TELEGRAM_DM_DELAY_MS:-1500}
+      TELEGRAM_BACKFILL_ON_START: ${TELEGRAM_BACKFILL_ON_START:-false}
+      TELEGRAM_BACKFILL_LIMIT: ${TELEGRAM_BACKFILL_LIMIT:-50}
+      TELEGRAM_BACKFILL_SINCE_DAYS: ${TELEGRAM_BACKFILL_SINCE_DAYS:-}
+      TELEGRAM_LOG_MESSAGES: ${TELEGRAM_LOG_MESSAGES:-false}
+      TELEGRAM_LOG_FULL: ${TELEGRAM_LOG_FULL:-false}
+      TELEGRAM_DEBUG: ${TELEGRAM_DEBUG:-false}
+      TELEGRAM_AUTO_REPLY: ${TELEGRAM_AUTO_REPLY:-true}
+      # LLM
+      LLM_ENABLED: ${LLM_ENABLED:-false}
+      LLM_API_TYPE: ${LLM_API_TYPE:-ollama}
+      LLM_ENDPOINT: ${LLM_ENDPOINT:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_EXTRACT_FIELDS: ${LLM_EXTRACT_FIELDS:-false}
+      LLM_EXTRACT_API_TYPE: ${LLM_EXTRACT_API_TYPE:-}
+      LLM_EXTRACT_ENDPOINT: ${LLM_EXTRACT_ENDPOINT:-}
+      LLM_EXTRACT_MODEL: ${LLM_EXTRACT_MODEL:-}
+      LLM_REPLY_API_TYPE: ${LLM_REPLY_API_TYPE:-}
+      LLM_REPLY_ENDPOINT: ${LLM_REPLY_ENDPOINT:-}
+      LLM_REPLY_MODEL: ${LLM_REPLY_MODEL:-}
+      LLM_REPLY_TEMPERATURE: ${LLM_REPLY_TEMPERATURE:-0.7}
+      LLM_REPLY_MAX_TOKENS: ${LLM_REPLY_MAX_TOKENS:-90}
+      LLM_REPLY_MAX_CHARS: ${LLM_REPLY_MAX_CHARS:-180}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CANDIDATE_PROFILE: ${CANDIDATE_PROFILE:-}
+      CV_FILE_PATH: ${CV_FILE_PATH:-}
+      CV_CAPTION: ${CV_CAPTION:-}
+      # Telegram Bot (for managing vacancies)
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_ALLOWED_USERS: ${TELEGRAM_BOT_ALLOWED_USERS:-}
+      # App
+      PORT: ${PORT:-3000}
+      NODE_ENV: ${NODE_ENV:-production}
+    ports:
+      - "${PORT:-3000}:3000"
+    networks:
+      - devops-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  devops-network:
+    driver: bridge
+

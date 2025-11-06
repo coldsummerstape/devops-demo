@@ -46,10 +46,29 @@ jobs:
           --health-interval 2s
           --health-timeout 3s
           --health-retries 30
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
     env:
       SKIP_E2E: ${{ inputs.skip_e2e || vars.SKIP_E2E || 'false' }}
       REDIS_HOST: 127.0.0.1
       REDIS_PORT: 6379
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: test
+      DATABASE_URL: postgresql://test:test@localhost:5432/test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
