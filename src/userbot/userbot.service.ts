@@ -8,6 +8,7 @@ import { Api } from 'telegram/tl';
 import { NewMessage } from 'telegram/events';
 import { RedisService } from '../redis/redis.service';
 import { Vacancy } from '../database/vacancy.entity';
+import { MetricsService } from '../metrics/metrics.service';
 
 type ChannelPost = {
 	peerId: number;
@@ -68,6 +69,7 @@ export class UserbotService implements OnModuleInit, OnModuleDestroy {
 		private readonly redisService: RedisService,
 		@InjectRepository(Vacancy)
 		private readonly vacancyRepository: Repository<Vacancy>,
+		private readonly metricsService: MetricsService,
 	) {
 		this.channelIdentifiers = this.parseListFromConfig('TELEGRAM_CHANNEL_IDS').map((v) => v.toLowerCase());
 		this.keywords = this.parseListFromConfig('TELEGRAM_JOB_KEYWORDS').map((k) => k.toLowerCase());
@@ -152,7 +154,7 @@ export class UserbotService implements OnModuleInit, OnModuleDestroy {
 
 		try {
 			this.client = new TelegramClient(new StringSession(sessionStr), apiId, apiHash, {
-				deviceModel: 'devops-demo-userbot',
+				deviceModel: 'career-autopilot-userbot',
 				appVersion: '1.0',
 				systemVersion: 'Node',
 			});
@@ -198,6 +200,9 @@ export class UserbotService implements OnModuleInit, OnModuleDestroy {
 		if (this.backfillOnStart) {
 			void this.runBackfill();
 		}
+
+		// Initialize statistics metrics from existing data
+		void this.refreshAllStatisticsMetrics();
 	}
 
 	onModuleDestroy(): void {
@@ -216,6 +221,7 @@ export class UserbotService implements OnModuleInit, OnModuleDestroy {
 	}
 
 	private async processApiMessage(newMessage: Api.Message): Promise<void> {
+		const timer = this.metricsService.vacancyProcessingDurationSeconds.startTimer();
 		const channelIdBig = (newMessage.peerId as Api.PeerChannel).channelId as any;
 		const peerId = typeof channelIdBig?.toString === 'function' ? channelIdBig.toString() : String(channelIdBig ?? '');
 		const messageId = newMessage.id;
@@ -512,10 +518,29 @@ export class UserbotService implements OnModuleInit, OnModuleDestroy {
 				createdAt: ts, // Use message publication date instead of current date
 			});
 			await this.vacancyRepository.save(vacancy);
+			
+			// Update metrics
+			this.metricsService.vacanciesProcessedTotal.inc({ status: 'processed' });
+			this.metricsService.vacanciesByStatus.set({ status: 'processed' }, await this.getVacancyCountByStatus('processed'));
+			this.metricsService.vacanciesTotal.set(await this.getTotalVacancyCount());
+			
+			// Update statistics metrics (simplified - refresh all periodically)
+			// For better performance, we could batch updates or use incremental updates
+			// For now, refresh all metrics every 10 vacancies
+			const totalCount = await this.getTotalVacancyCount();
+			if (totalCount % 10 === 0) {
+				// Refresh all statistics metrics periodically
+				void this.refreshAllStatisticsMetrics();
+			} else {
+				// Quick update for this specific vacancy
+				await this.updateStatisticsMetrics(vacancy);
+			}
+			
 			if (this.debugLogs) {
 				this.logger.log(`Vacancy saved: id=${vacancy.id} channelId=${peerId} channelUsername=${channelUsername || 'N/A'} messageId=${messageId} createdAt=${vacancy.createdAt?.toISOString() || 'N/A'}`);
 			}
 		} catch (e: unknown) {
+			this.metricsService.vacanciesErrorsTotal.inc({ error_type: 'save_failed' });
 			this.logger.warn(`Failed to save vacancy: ${(e as Error).message}`);
 		}
 
@@ -524,6 +549,9 @@ export class UserbotService implements OnModuleInit, OnModuleDestroy {
 		} else if (this.debugLogs) {
 			this.logger.log('Auto-reply disabled (TELEGRAM_AUTO_REPLY=false); skipping DM send');
 		}
+		
+		// Record processing duration
+		timer();
 	}
 
 	private renderPrettyRelevantLog(input: {
@@ -695,7 +723,9 @@ export class UserbotService implements OnModuleInit, OnModuleDestroy {
 	}
 
 	private async callLlmGenerate(prompt: string): Promise<string | undefined> {
+		const timer = this.metricsService.llmRequestDurationSeconds.startTimer({ type: 'reply' });
 		try {
+			this.metricsService.llmRequestsTotal.inc({ type: 'reply' });
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), 45000);
 			const doFetch: any = (globalThis as any).fetch;
@@ -841,8 +871,11 @@ export class UserbotService implements OnModuleInit, OnModuleDestroy {
 			if (!text && this.debugLogs) {
 				this.logger.log(`LLM empty text; generate keys=${Object.keys(json || {}).join(',') || 'none'}`);
 			}
+			timer();
 			return text ? text.replace(/\s+/g, ' ').trim() : undefined;
 		} catch (e) {
+			timer();
+			this.metricsService.llmErrorsTotal.inc({ type: 'reply', error_type: 'request_failed' });
 			return undefined;
 		}
 	}
@@ -868,7 +901,9 @@ export class UserbotService implements OnModuleInit, OnModuleDestroy {
 			return null;
 		}
 
+		const timer = this.metricsService.llmRequestDurationSeconds.startTimer({ type: 'extract' });
 		try {
+			this.metricsService.llmRequestsTotal.inc({ type: 'extract' });
 			const prompt = `Ты эксперт по анализу текстов вакансий. Извлеки структурированные данные из текста вакансии.
 
 ВАЖНО: Верни ТОЛЬКО валидный JSON без пояснений, без markdown, без кавычек вокруг JSON.
@@ -953,6 +988,8 @@ JSON ответ:`;
 			clearTimeout(timeout);
 
 			if (!res.ok) {
+				timer();
+				this.metricsService.llmErrorsTotal.inc({ type: 'extract', error_type: 'http_error' });
 				if (this.debugLogs) this.logger.warn(`LLM extract HTTP error: ${res.status}`);
 				return null;
 			}
@@ -1000,6 +1037,8 @@ JSON ответ:`;
 			}
 
 			if (!rawText) {
+				timer();
+				this.metricsService.llmErrorsTotal.inc({ type: 'extract', error_type: 'empty_response' });
 				this.logger.warn(`LLM extract: empty response. Full JSON preview: ${JSON.stringify(json).substring(0, 500)}`);
 				return null;
 			}
@@ -1022,6 +1061,7 @@ JSON ответ:`;
 				if (this.debugLogs) {
 					this.logger.log(`LLM extract success: ${Object.keys(parsed).join(', ')}`);
 				}
+				timer();
 				return {
 					position: parsed.position || undefined,
 					company: parsed.company || undefined,
@@ -1036,6 +1076,8 @@ JSON ответ:`;
 					summary: parsed.summary || undefined,
 				};
 			} catch (parseError) {
+				timer();
+				this.metricsService.llmErrorsTotal.inc({ type: 'extract', error_type: 'parse_failed' });
 				if (this.debugLogs) {
 					this.logger.warn(`LLM extract: JSON parse error: ${(parseError as Error).message}`);
 					this.logger.warn(`LLM extract raw: ${cleaned.substring(0, 200)}`);
@@ -1043,6 +1085,8 @@ JSON ответ:`;
 				return null;
 			}
 		} catch (e: unknown) {
+			timer();
+			this.metricsService.llmErrorsTotal.inc({ type: 'extract', error_type: 'request_failed' });
 			if (this.debugLogs) {
 				this.logger.warn(`LLM extract failed: ${(e as Error).message}`);
 			}
@@ -1755,8 +1799,10 @@ JSON ответ:`;
 				}
 				await this.client.sendMessage(entity as any, { message: payload });
 				this.logger.log(`DM sent to ${username}`);
+				this.metricsService.vacanciesDmSentTotal.inc();
 				dmSent = true;
 			} catch (e: unknown) {
+				this.metricsService.vacanciesErrorsTotal.inc({ error_type: 'dm_failed' });
 				this.logger.warn(`Failed to DM ${username}: ${(e as Error).message}`);
 			}
 		}
@@ -1768,10 +1814,14 @@ JSON ответ:`;
 					{ channelId: peerId, messageId },
 					{ dmSent: true, status: 'sent' },
 				);
+				// Update metrics
+				this.metricsService.vacanciesByStatus.set({ status: 'sent' }, await this.getVacancyCountByStatus('sent'));
+				this.metricsService.vacanciesByStatus.set({ status: 'processed' }, await this.getVacancyCountByStatus('processed'));
 				if (this.debugLogs) {
 					this.logger.log(`Vacancy updated: channelId=${peerId} messageId=${messageId} status=sent`);
 				}
 			} catch (e: unknown) {
+				this.metricsService.vacanciesErrorsTotal.inc({ error_type: 'update_failed' });
 				this.logger.warn(`Failed to update vacancy status: ${(e as Error).message}`);
 			}
 		}
@@ -1779,6 +1829,194 @@ JSON ответ:`;
 
 	private async delay(ms: number): Promise<void> {
 		await new Promise((resolve) => setTimeout(resolve, ms));
+	}
+
+	private async getVacancyCountByStatus(status: string): Promise<number> {
+		try {
+			return await this.vacancyRepository.count({ where: { status } });
+		} catch {
+			return 0;
+		}
+	}
+
+	private async getTotalVacancyCount(): Promise<number> {
+		try {
+			return await this.vacancyRepository.count();
+		} catch {
+			return 0;
+		}
+	}
+
+	private normalizeSalaryToRange(salary?: string): string {
+		if (!salary) return 'unknown';
+		const s = salary.toLowerCase();
+		
+		// Extract numbers from salary string
+		const numbers = salary.match(/\d+/g);
+		if (!numbers || numbers.length === 0) return 'unknown';
+		
+		// Get the first number (minimum salary) or single number
+		const minSalary = parseInt(numbers[0].replace(/\s/g, ''), 10);
+		if (!Number.isFinite(minSalary)) return 'unknown';
+		
+		// Determine currency (rubles by default)
+		const isUSD = /usd|\$|доллар/i.test(salary);
+		const isEUR = /eur|€|евро/i.test(salary);
+		
+		// Convert to rubles for comparison (approximate rates)
+		let minSalaryRub = minSalary;
+		if (isUSD) minSalaryRub = minSalary * 100; // ~100 RUB per USD
+		if (isEUR) minSalaryRub = minSalary * 110; // ~110 RUB per EUR
+		
+		// Define salary ranges (in rubles)
+		if (minSalaryRub < 100000) return '0-100k';
+		if (minSalaryRub < 200000) return '100k-200k';
+		if (minSalaryRub < 300000) return '200k-300k';
+		if (minSalaryRub < 400000) return '300k-400k';
+		if (minSalaryRub < 500000) return '400k-500k';
+		if (minSalaryRub < 700000) return '500k-700k';
+		if (minSalaryRub < 1000000) return '700k-1M';
+		return '1M+';
+	}
+
+	private async updateStatisticsMetrics(vacancy: Vacancy): Promise<void> {
+		try {
+			// Update location metric
+			if (vacancy.location) {
+				const locationCount = await this.vacancyRepository.count({ where: { location: vacancy.location } });
+				this.metricsService.vacanciesByLocation.set({ location: vacancy.location }, locationCount);
+			}
+			
+			// Update work format metric
+			if (vacancy.workFormat) {
+				const workFormatCount = await this.vacancyRepository.count({ where: { workFormat: vacancy.workFormat } });
+				this.metricsService.vacanciesByWorkFormat.set({ work_format: vacancy.workFormat }, workFormatCount);
+			}
+			
+			// Update employment metric
+			if (vacancy.employment) {
+				const employmentCount = await this.vacancyRepository.count({ where: { employment: vacancy.employment } });
+				this.metricsService.vacanciesByEmployment.set({ employment: vacancy.employment }, employmentCount);
+			}
+			
+			// Update salary range metric
+			// Note: Salary range counting is done in refreshAllStatisticsMetrics
+			// because we need to normalize all salaries to ranges
+			
+			// Update company metric (limit to top companies to avoid too many labels)
+			if (vacancy.company) {
+				const companyCount = await this.vacancyRepository.count({ where: { company: vacancy.company } });
+				// Only track companies with multiple vacancies to reduce label cardinality
+				if (companyCount >= 2) {
+					this.metricsService.vacanciesByCompany.set({ company: vacancy.company }, companyCount);
+				}
+			}
+			
+			// Update technology metrics
+			if (vacancy.stack && vacancy.stack.length > 0) {
+				for (const tech of vacancy.stack) {
+					if (tech) {
+						// Count vacancies that have this technology in their stack
+						const allVacancies = await this.vacancyRepository.find();
+						const techCount = allVacancies.filter(v => v.stack && v.stack.includes(tech)).length;
+						this.metricsService.vacanciesByTechnology.set({ technology: tech.toLowerCase() }, techCount);
+					}
+				}
+			}
+		} catch (e: unknown) {
+			if (this.debugLogs) {
+				this.logger.warn(`Failed to update statistics metrics: ${(e as Error).message}`);
+			}
+		}
+	}
+
+	private async refreshAllStatisticsMetrics(): Promise<void> {
+		try {
+			// Get all vacancies
+			const vacancies = await this.vacancyRepository.find();
+			
+			// Aggregate statistics
+			const locationCounts = new Map<string, number>();
+			const workFormatCounts = new Map<string, number>();
+			const employmentCounts = new Map<string, number>();
+			const salaryRangeCounts = new Map<string, number>();
+			const companyCounts = new Map<string, number>();
+			const technologyCounts = new Map<string, number>();
+			
+			for (const vacancy of vacancies) {
+				// Location
+				if (vacancy.location) {
+					locationCounts.set(vacancy.location, (locationCounts.get(vacancy.location) || 0) + 1);
+				}
+				
+				// Work format
+				if (vacancy.workFormat) {
+					workFormatCounts.set(vacancy.workFormat, (workFormatCounts.get(vacancy.workFormat) || 0) + 1);
+				}
+				
+				// Employment
+				if (vacancy.employment) {
+					employmentCounts.set(vacancy.employment, (employmentCounts.get(vacancy.employment) || 0) + 1);
+				}
+				
+				// Salary range
+				if (vacancy.salary) {
+					const range = this.normalizeSalaryToRange(vacancy.salary);
+					salaryRangeCounts.set(range, (salaryRangeCounts.get(range) || 0) + 1);
+				}
+				
+				// Company
+				if (vacancy.company) {
+					companyCounts.set(vacancy.company, (companyCounts.get(vacancy.company) || 0) + 1);
+				}
+				
+				// Technologies
+				if (vacancy.stack && vacancy.stack.length > 0) {
+					for (const tech of vacancy.stack) {
+						if (tech) {
+							const techLower = tech.toLowerCase();
+							technologyCounts.set(techLower, (technologyCounts.get(techLower) || 0) + 1);
+						}
+					}
+				}
+			}
+			
+			// Update metrics
+			locationCounts.forEach((count, location) => {
+				this.metricsService.vacanciesByLocation.set({ location }, count);
+			});
+			
+			workFormatCounts.forEach((count, workFormat) => {
+				this.metricsService.vacanciesByWorkFormat.set({ work_format: workFormat }, count);
+			});
+			
+			employmentCounts.forEach((count, employment) => {
+				this.metricsService.vacanciesByEmployment.set({ employment }, count);
+			});
+			
+			salaryRangeCounts.forEach((count, salaryRange) => {
+				this.metricsService.vacanciesBySalaryRange.set({ salary_range: salaryRange }, count);
+			});
+			
+			// Only track companies with 2+ vacancies
+			companyCounts.forEach((count, company) => {
+				if (count >= 2) {
+					this.metricsService.vacanciesByCompany.set({ company }, count);
+				}
+			});
+			
+			technologyCounts.forEach((count, technology) => {
+				this.metricsService.vacanciesByTechnology.set({ technology }, count);
+			});
+			
+			// Reset metrics for values that no longer exist (to avoid stale data)
+			// Note: This is a simplified approach. In production, you might want to track all labels
+			// and reset them before updating, or use a different strategy.
+		} catch (e: unknown) {
+			if (this.debugLogs) {
+				this.logger.warn(`Failed to refresh statistics metrics: ${(e as Error).message}`);
+			}
+		}
 	}
 }
 

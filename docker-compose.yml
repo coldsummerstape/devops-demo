@@ -1,12 +1,12 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: devops-demo-postgres
+    container_name: career-autopilot-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: devops_demo
+      POSTGRES_DB: career_autopilot
     ports:
       - "5432:5432"
     volumes:
@@ -21,7 +21,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: devops-demo-redis
+    container_name: career-autopilot-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -40,7 +40,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: devops-demo-app
+    container_name: career-autopilot-app
     restart: unless-stopped
     depends_on:
       postgres:
@@ -53,7 +53,7 @@ services:
       DB_PORT: 5432
       DB_USER: postgres
       DB_PASSWORD: postgres
-      DB_NAME: devops_demo
+      DB_NAME: career_autopilot
       DB_SYNC: "true"
       DB_LOGGING: "false"
       # Redis

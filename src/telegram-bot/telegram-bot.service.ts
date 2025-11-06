@@ -5,6 +5,7 @@ import { Repository, Like } from 'typeorm';
 import { Telegraf, Context, Markup } from 'telegraf';
 import { Vacancy } from '../database/vacancy.entity';
 import { UserbotService } from '../userbot/userbot.service';
+import { MetricsService } from '../metrics/metrics.service';
 
 @Injectable()
 export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
@@ -18,6 +19,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
 		@InjectRepository(Vacancy)
     private readonly vacancyRepository: Repository<Vacancy>,
     private readonly userbotService: UserbotService,
+    private readonly metricsService: MetricsService,
   ) {
 		this.botToken = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
 		const allowedUsersStr = this.configService.get<string>('TELEGRAM_BOT_ALLOWED_USERS');
@@ -142,6 +144,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
 
 		// /start
 		this.bot.command('start', async (ctx: Context) => {
+			this.metricsService.telegramBotCommandsTotal.inc({ command: 'start' });
 			await ctx.reply(
 				'👋 Привет! Я бот для управления вакансиями.\n\n' +
 				'Используйте кнопки меню ниже для навигации.',
@@ -192,11 +195,13 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
 
 		// /stats
 		this.bot.command('stats', async (ctx: Context) => {
+			this.metricsService.telegramBotCommandsTotal.inc({ command: 'stats' });
 			await this.showStats(ctx);
 		});
 
 		// /list
 		this.bot.command('list', async (ctx: Context) => {
+			this.metricsService.telegramBotCommandsTotal.inc({ command: 'list' });
 			const args = ctx.message && 'text' in ctx.message ? ctx.message.text.split(' ').slice(1) : [];
 			const status = args[0] || undefined;
 			await this.showList(ctx, status);
@@ -204,6 +209,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
 
 		// /recent
 		this.bot.command('recent', async (ctx: Context) => {
+			this.metricsService.telegramBotCommandsTotal.inc({ command: 'recent' });
 			const args = ctx.message && 'text' in ctx.message ? ctx.message.text.split(' ').slice(1) : [];
 			const limit = args[0] ? Math.min(Number(args[0]) || 10, 50) : 10;
 			await this.showRecent(ctx, limit);
@@ -211,6 +217,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
 
 		// /search
 		this.bot.command('search', async (ctx: Context) => {
+			this.metricsService.telegramBotCommandsTotal.inc({ command: 'search' });
 			const args = ctx.message && 'text' in ctx.message ? ctx.message.text.split(' ').slice(1) : [];
 			const query = args.join(' ');
 			
@@ -283,6 +290,7 @@ export class TelegramBotService implements OnModuleInit, OnModuleDestroy {
 				}
 
 				const [action, vacancyId] = data.split(':');
+				this.metricsService.telegramBotCallbacksTotal.inc({ action });
 
 			// Обработка действий, которые не требуют vacancyId
 			if (action === 'back_to_list') {

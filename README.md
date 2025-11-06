@@ -1,6 +1,6 @@
-# DevOps Demo: NestJS + Redis + Kubernetes with CI/CD
+# Career Autopilot: Telegram Userbot for Job Vacancies
 
-This repository contains a minimal NestJS service that checks connectivity to Redis and exposes a health endpoint. It is packaged with a multi‑stage Dockerfile, deployed to Kubernetes via Helm, and released through a GitHub Actions CI/CD pipeline. Optional monitoring (Prometheus/Grafana) and logging (Loki/Promtail) stacks are included in the umbrella chart.
+This repository contains a NestJS application that automatically monitors Telegram channels for job vacancies, parses them using AI, and sends personalized replies to recruiters. It is packaged with a multi‑stage Dockerfile, deployed to Kubernetes via Helm, and released through a GitHub Actions CI/CD pipeline. Optional monitoring (Prometheus/Grafana) and logging (Loki/Promtail) stacks are included in the umbrella chart.
 
 ## Repository Structure
 
@@ -43,8 +43,8 @@ charts/
   - Ingress: ingress‑nginx enabled with metrics and ServiceMonitor
   - Grafana datasources preconfigured (Prometheus default, Alertmanager, Loki)
   - Ingress examples:
-    - App: `devops-demo.local`
-    - Grafana: `grafana.devops-demo.local`
+    - App: `career-autopilot.local`
+    - Grafana: `grafana.career-autopilot.local`
 
 ## CI/CD (GitHub Actions)
 
@@ -68,7 +68,7 @@ Required secrets:
 ## Monitoring and Logging
 
 - Prometheus discovers all ServiceMonitor/PodMonitor across namespaces (empty selectors)
-- Grafana datasources: Prometheus (default), Alertmanager, Loki; Grafana Ingress `grafana.devops-demo.local`
+- Grafana datasources: Prometheus (default), Alertmanager, Loki; Grafana Ingress `grafana.career-autopilot.local`
 - Promtail collects logs from annotated pods, with regex pipeline tailored to NestJS format
 - Redis exporter enabled via Bitnami chart
 
@@ -95,7 +95,7 @@ kubectl create namespace devops-test
 3) Install umbrella stack from local sources
 
 ```bash
-helm upgrade --install devops-demo ./charts/stack \
+helm upgrade --install career-autopilot ./charts/stack \
   -n devops-test \
   -f ./charts/stack/values.yaml
 ```
@@ -105,7 +105,7 @@ Alternative: install packaged OCI chart (after CI publishes)
 ```bash
 export HELM_EXPERIMENTAL_OCI=1
 helm registry login ghcr.io -u <github_user> --password-stdin <<< "$GITHUB_TOKEN"
-helm upgrade --install devops-demo oci://ghcr.io/<owner>/charts/devops-demo \
+helm upgrade --install career-autopilot oci://ghcr.io/<owner>/charts/career-autopilot \
   --version <chart-version> \
   -n devops-test
 ```
@@ -122,21 +122,21 @@ kubectl get svc -n devops-test
 Port‑forward:
 
 ```bash
-kubectl port-forward -n devops-test svc/devops-demo 3000:3000
+kubectl port-forward -n devops-test svc/career-autopilot 3000:3000
 curl http://localhost:3000/redis
 ```
 
 Ingress (with DNS/hosts configured):
 
 ```bash
-curl http://devops-demo.local/redis
+curl http://career-autopilot.local/redis
 ```
 
 6) Access Grafana
 
 ```bash
 kubectl get ingress -n devops-test
-# Open http://grafana.devops-demo.local
+# Open http://grafana.career-autopilot.local
 ```
 
 ## Docker Compose
@@ -181,10 +181,10 @@ curl http://localhost:3000/redis
 Docker build & run locally:
 
 ```bash
-docker build -t devops-demo:local .
+docker build -t career-autopilot:local .
 docker run --rm -p 3000:3000 \
   -e REDIS_HOST=host.docker.internal -e REDIS_PORT=6379 \
-  devops-demo:local
+  career-autopilot:local
 ```
 
 ## Configuration
@@ -197,7 +197,7 @@ docker run --rm -p 3000:3000 \
 - `DB_PORT` (default 5432)
 - `DB_USER` (default `postgres`)
 - `DB_PASSWORD` (default `postgres`)
-- `DB_NAME` (default `devops_demo`)
+- `DB_NAME` (default `career_autopilot`)
 - `DB_SYNC` (default `false`, для dev можно `true` для автоматической синхронизации схемы)
 - `DB_LOGGING` (default `false`, включить SQL логи)
 - `PORT` (default 3000)

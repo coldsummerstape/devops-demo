@@ -7,12 +7,14 @@ import { RedisModule } from './redis/redis.module';
 import { UserbotModule } from './userbot/userbot.module';
 import { DatabaseModule } from './database/database.module';
 import { TelegramBotModule } from './telegram-bot/telegram-bot.module';
+import { MetricsModule } from './metrics/metrics.module';
 
 @Module({
 	imports: [
 		ConfigModule.forRoot({
 			isGlobal: true,
 		}),
+		MetricsModule,
 		DatabaseModule,
 		RedisModule,
 		UserbotModule,

@@ -1,0 +1,471 @@
+# Default values for career-autopilot stack
+
+# Application via bjw-s/app-template
+app:
+  enabled: true
+  
+  controllers:
+    app:
+      enabled: true
+      
+      initContainers:
+        wait-for-postgres:
+          image:
+            repository: busybox
+            tag: "1.36"
+            pullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - >-
+              until nc -z "$POSTGRES_HOST" "$POSTGRES_PORT"; do echo "waiting for postgres at ${POSTGRES_HOST}:${POSTGRES_PORT}"; sleep 2; done
+          env:
+            - name: POSTGRES_HOST
+              value: "{{ .Release.Name }}-postgresql"
+            - name: POSTGRES_PORT
+              value: "5432"
+        wait-for-redis:
+          image:
+            repository: busybox
+            tag: "1.36"
+            pullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - >-
+              until nc -z "$REDIS_HOST" "$REDIS_PORT"; do echo "waiting for redis at ${REDIS_HOST}:${REDIS_PORT}"; sleep 2; done
+          env:
+            - name: REDIS_HOST
+              value: "{{ .Release.Name }}-redis-master"
+            - name: REDIS_PORT
+              value: "6379"
+      
+      pod:
+        annotations:
+          promtail.grafana.com/scrape: "true"
+          promtail.grafana.com/job: "career-autopilot"
+          promtail.grafana.com/pipeline_stages: |
+            - cri: {}
+      
+      containers:
+        app:
+          image:
+            repository: ghcr.io/coldsummerstape/career-autopilot
+            tag: latest
+            pullPolicy: IfNotPresent
+          
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          
+          env:
+            # Database (PostgreSQL)
+            - name: POSTGRES_HOST
+              value: "{{ .Release.Name }}-postgresql"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ .Release.Name }}-postgresql"
+                  key: postgres-password
+            - name: POSTGRES_DB
+              value: "career_autopilot"
+            - name: DATABASE_URL
+              value: "postgresql://postgres:$(POSTGRES_PASSWORD)@{{ .Release.Name }}-postgresql:5432/career_autopilot"
+            - name: DB_SYNC
+              value: "false"
+            - name: DB_LOGGING
+              value: "false"
+            
+            # Redis
+            - name: REDIS_HOST
+              value: "{{ .Release.Name }}-redis-master"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_DB
+              value: "0"
+            # REDIS_PASSWORD will be added conditionally if redis.auth.enabled is true
+            # Uncomment and adjust if needed:
+            # - name: REDIS_PASSWORD
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: "{{ .Release.Name }}-redis"
+            #       key: redis-password
+            
+            # Telegram Userbot
+            - name: TELEGRAM_API_ID
+              valueFrom:
+                secretKeyRef:
+                  name: career-autopilot-secrets
+                  key: telegram-api-id
+            - name: TELEGRAM_API_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: career-autopilot-secrets
+                  key: telegram-api-hash
+            - name: TELEGRAM_SESSION
+              valueFrom:
+                secretKeyRef:
+                  name: career-autopilot-secrets
+                  key: telegram-session
+            - name: TELEGRAM_CHANNEL_IDS
+              value: ""
+            - name: TELEGRAM_JOB_KEYWORDS
+              value: "#вакансия,#vacancy"
+            - name: TELEGRAM_REPLY_TEMPLATE
+              value: ""
+            - name: TELEGRAM_DRY_RUN
+              value: "true"
+            - name: TELEGRAM_DM_MAX
+              value: "3"
+            - name: TELEGRAM_DM_DELAY_MS
+              value: "1500"
+            - name: TELEGRAM_BACKFILL_ON_START
+              value: "false"
+            - name: TELEGRAM_BACKFILL_LIMIT
+              value: "50"
+            - name: TELEGRAM_BACKFILL_SINCE_DAYS
+              value: ""
+            - name: TELEGRAM_LOG_MESSAGES
+              value: "false"
+            - name: TELEGRAM_LOG_FULL
+              value: "false"
+            - name: TELEGRAM_DEBUG
+              value: "false"
+            - name: TELEGRAM_AUTO_REPLY
+              value: "true"
+            
+            # Telegram Bot
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: career-autopilot-secrets
+                  key: telegram-bot-token
+                  optional: true
+            - name: TELEGRAM_BOT_ALLOWED_USERS
+              value: ""
+            
+            # LLM
+            - name: LLM_ENABLED
+              value: "false"
+            - name: LLM_API_TYPE
+              value: "ollama"
+            - name: LLM_ENDPOINT
+              value: ""
+            - name: LLM_MODEL
+              value: ""
+            - name: LLM_EXTRACT_API_TYPE
+              value: ""
+            - name: LLM_EXTRACT_ENDPOINT
+              value: ""
+            - name: LLM_EXTRACT_MODEL
+              value: ""
+            - name: LLM_REPLY_API_TYPE
+              value: ""
+            - name: LLM_REPLY_ENDPOINT
+              value: ""
+            - name: LLM_REPLY_MODEL
+              value: ""
+            - name: LLM_REPLY_TEMPERATURE
+              value: "0.7"
+            - name: LLM_REPLY_MAX_TOKENS
+              value: "90"
+            - name: LLM_REPLY_MAX_CHARS
+              value: "180"
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: career-autopilot-secrets
+                  key: openai-api-key
+                  optional: true
+            - name: CANDIDATE_PROFILE
+              value: ""
+            - name: CV_FILE_PATH
+              value: ""
+            - name: CV_CAPTION
+              value: ""
+            
+            # App
+            - name: PORT
+              value: "3000"
+            - name: NODE_ENV
+              value: "production"
+          
+          probes:
+            liveness:
+              enabled: true
+              custom: true
+              spec:
+                httpGet:
+                  path: /
+                  port: 3000
+            readiness:
+              enabled: true
+              custom: true
+              spec:
+                httpGet:
+                  path: /
+                  port: 3000
+  
+  service:
+    main:
+      enabled: true
+      controller: app
+      ports:
+        http:
+          port: 3000
+          targetPort: http
+  
+  ingress:
+    main:
+      enabled: true
+      className: nginx
+      hosts:
+        - host: career-autopilot.local
+          paths:
+            - path: /
+              pathType: Prefix
+              service:
+                name: career-autopilot
+                port: 3000
+      tls: []
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  
+  autoscaling:
+    horizontal:
+      app:
+        enabled: false
+        minReplicas: 1
+        maxReplicas: 3
+        targetCPUUtilizationPercentage: 80
+  
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  
+  securityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+# PostgreSQL subchart
+postgresql:
+  enabled: true
+  auth:
+    postgresPassword: ""  # Should be set via secret or override
+    database: career_autopilot
+    username: postgres
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: prometheus
+
+# Redis subchart
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 4Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: prometheus
+
+# Monitoring (Prometheus + Grafana)
+monitoringstack:
+  enabled: true
+  
+  prometheus:
+    prometheusSpec:
+      retention: 15d
+      # ВАЖНО: подбираем ВСЕ ServiceMonitor/PodMonitor из ВСЕХ ns
+      serviceMonitorSelector: {}
+      podMonitorSelector: {}
+      ruleSelector: {}
+      serviceMonitorNamespaceSelector: {}
+      podMonitorNamespaceSelector: {}
+      ruleNamespaceSelector: {}
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: 1000m
+          memory: 4Gi
+  
+  kubeStateMetrics:
+    enabled: true
+  
+  nodeExporter:
+    enabled: true
+  
+  grafana:
+    enabled: true
+    sidecar:
+      datasources:
+        enabled: true
+        label: grafana_datasource
+        labelValue: "1"
+        searchNamespace: ALL
+        resource: both
+        defaultDatasourceEnabled: false
+        isDefaultDatasource: false
+    
+    additionalDataSources:
+      - name: Prometheus
+        type: prometheus
+        uid: prometheus
+        url: "http://career-autopilot-monitoringstac-prometheus:9090/"
+        access: proxy
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          timeInterval: 30s
+      - name: Alertmanager
+        type: alertmanager
+        uid: alertmanager
+        url: "http://career-autopilot-monitoringstac-alertmanager.devops-test:9093/"
+        access: proxy
+        jsonData:
+          handleGrafanaManagedAlerts: false
+          implementation: prometheus
+      - name: Loki
+        type: loki
+        uid: loki
+        url: "http://career-autopilot-loki:3100"
+        access: proxy
+        isDefault: false
+        jsonData:
+          maxLines: 1000
+    
+    env:
+      GF_USERS_AUTO_ASSIGN_ORG: "true"
+      GF_USERS_AUTO_ASSIGN_ORG_ID: "1"
+      GF_USERS_AUTO_ASSIGN_ROLE: "Admin"
+    
+    ingress:
+      enabled: true
+      annotations:
+        kubernetes.io/ingress.class: nginx
+      hosts:
+        - grafana.career-autopilot.local
+      path: /
+      pathType: Prefix
+      tls: []
+    
+    persistence:
+      enabled: true
+      size: 10Gi
+
+# Logging (Loki + Promtail)
+loggingstack:
+  enabled: true
+  
+  grafana:
+    sidecar:
+      datasources:
+        enabled: false
+  
+  promtail:
+    enabled: true
+    config:
+      positions:
+        filename: /run/promtail/positions.yaml
+      clients:
+        - url: http://career-autopilot-loki:3100/loki/api/v1/push
+      server:
+        http_listen_port: 3101
+        grpc_listen_port: 0
+      scrape_configs:
+        - job_name: kubernetes-pods-annotated
+          pipeline_stages:
+            - cri: {}
+            - regex:
+                expression: '^\[Nest\]\s+\d+\s+-\s+(?P<ts>\d{2}/\d{2}/\d{4},\s+\d{1,2}:\d{2}:\d{2}\s+[AP]M)\s+(?P<level>[A-Z]+)\s+\[(?P<context>[^\]]+)\]\s+(?P<msg>.*)$'
+            - labels:
+                level:
+                context:
+            - timestamp:
+                source: ts
+                format: '01/02/2006, 3:04:05 PM'
+            - output:
+                source: msg
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - action: keep
+              source_labels: [__meta_kubernetes_pod_annotation_promtail_grafana_com_scrape]
+              regex: true
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_annotation_promtail_grafana_com_job]
+              target_label: job
+            - action: replace
+              source_labels: [__meta_kubernetes_namespace]
+              target_label: namespace
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod
+            - action: replace
+              source_labels: [__meta_kubernetes_pod_container_name]
+              target_label: container
+            - action: replace
+              replacement: /var/log/pods/*/*/*.log
+              target_label: __path__
+
+# Ingress Controller
+ingressnginx:
+  enabled: true
+  controller:
+    ingressClassResource:
+      name: nginx
+      controllerValue: k8s.io/ingress-nginx
+      default: true
+    service:
+      type: LoadBalancer
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        additionalLabels: {}

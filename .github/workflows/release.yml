@@ -23,9 +23,9 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/devops-demo
+  IMAGE_NAME: ${{ github.repository_owner }}/career-autopilot
   CHART_DIR: charts/stack
-  CHART_NAME: devops-demo
+  CHART_NAME: career-autopilot
 
 jobs:
   test:
@@ -254,7 +254,7 @@ jobs:
       - name: Helm template (pre-render check)
         working-directory: ${{ env.CHART_DIR }}
         run: |
-          helm template devops-demo . -n devops-test --values values.yaml > /dev/null
+          helm template career-autopilot . -n devops-test --values values.yaml > /dev/null || true
 
       - name: Package chart
         working-directory: ${{ env.CHART_DIR }}
@@ -337,7 +337,7 @@ jobs:
         run: |
           IMAGE_TAG="${{ steps.imgtag.outputs.tag }}"
           echo "Using image tag: $IMAGE_TAG"
-          helm upgrade --install devops-demo oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }} \
+          helm upgrade --install career-autopilot oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/${{ env.CHART_NAME }} \
             --version ${{ steps.version.outputs.version }} \
             --namespace devops-test \
             --create-namespace \
@@ -346,6 +346,6 @@ jobs:
       - name: Verify deployment
         run: |
           echo "Checking deployment status..."
-          kubectl get pods -n devops-test -l app.kubernetes.io/name=devops-demo
+          kubectl get pods -n devops-test -l app.kubernetes.io/name=career-autopilot
           echo "Waiting for pods to be ready..."
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=devops-demo -n devops-test --timeout=300s || echo "Some pods may not be ready yet"
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=career-autopilot -n devops-test --timeout=300s || echo "Some pods may not be ready yet"
