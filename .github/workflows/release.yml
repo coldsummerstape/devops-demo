@@ -63,11 +63,13 @@ jobs:
       SKIP_E2E: ${{ inputs.skip_e2e || vars.SKIP_E2E || 'false' }}
       REDIS_HOST: 127.0.0.1
       REDIS_PORT: 6379
-      POSTGRES_HOST: localhost
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: test
-      POSTGRES_PASSWORD: test
-      POSTGRES_DB: test
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USER: test
+      DB_PASSWORD: test
+      DB_NAME: test
+      DB_SYNC: "true"
+      DB_LOGGING: "false"
       DATABASE_URL: postgresql://test:test@localhost:5432/test
     steps:
       - name: Checkout

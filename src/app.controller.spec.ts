@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { MetricsService } from './metrics/metrics.service';
 
 describe('AppController', () => {
 	let controller: AppController;
@@ -15,6 +16,12 @@ describe('AppController', () => {
 					useValue: {
 						getHello: jest.fn(),
 						checkRedisHealth: jest.fn(),
+					},
+				},
+				{
+					provide: MetricsService,
+					useValue: {
+						getMetrics: jest.fn().mockResolvedValue('# HELP test_metric Test metric\n# TYPE test_metric counter\ntest_metric 1\n'),
 					},
 				},
 			],
